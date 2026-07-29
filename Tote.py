@@ -8,6 +8,7 @@ from reportlab.lib.units import cm, inch
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from io import BytesIO
 import subprocess
 import sys
@@ -55,6 +56,32 @@ except ImportError:
 bold_style = ParagraphStyle(name='Bold', fontName='Helvetica-Bold', fontSize=9, alignment=TA_CENTER, leading=10)
 desc_style = ParagraphStyle(name='Desc', fontName='Helvetica', fontSize=7, alignment=TA_LEFT, leading=9)
 qty_style = ParagraphStyle(name='Quantity', fontName='Helvetica', fontSize=8, alignment=TA_CENTER, leading=11)
+
+def get_autofit_paragraph(text, col_width, font_name='Helvetica-Bold',
+                           max_font_size=8, min_font_size=4, padding=4):
+    """
+    Build a Paragraph whose font size shrinks to fit inside col_width.
+    Starts at max_font_size and steps down until the text fits on one line
+    (or min_font_size is reached, at which point it will wrap instead).
+    """
+    text = str(text) if text is not None else ""
+    available_width = max(col_width - padding, 1)
+
+    font_size = max_font_size
+    while font_size > min_font_size:
+        if stringWidth(text, font_name, font_size) <= available_width:
+            break
+        font_size -= 0.5
+
+    style = ParagraphStyle(
+        name='AutoFit',
+        fontName=font_name,
+        fontSize=font_size,
+        leading=font_size + 1,
+        alignment=TA_CENTER,
+    )
+    return Paragraph(text, style)
+
 
 def generate_qr_code(data_string):
     """Generate a QR code from the given data string"""
@@ -299,8 +326,13 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
         total_proportion = sum(COLUMN_WIDTH_PROPORTIONS)
         inner_col_widths = [w * inner_table_width / total_proportion for w in COLUMN_WIDTH_PROPORTIONS]
 
+        store_location_cells = [
+            get_autofit_paragraph(val, inner_col_widths[i], max_font_size=8, min_font_size=4)
+            for i, val in enumerate(store_location_parts)
+        ]
+
         store_loc_inner_table = Table(
-            [store_location_parts],
+            [store_location_cells],
             colWidths=inner_col_widths,
             rowHeights=[location_row_height]
         )
@@ -309,8 +341,8 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
             ('GRID', (0, 0), (-1, -1), 1.0, colors.Color(0, 0, 0, alpha=0.95)),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
         ]))
 
         store_loc_table = Table(
@@ -331,8 +363,13 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
         ))
         
         # Create the inner table for line location parts using the same fixed widths
+        line_location_cells = [
+            get_autofit_paragraph(val, inner_col_widths[i], max_font_size=7, min_font_size=4)
+            for i, val in enumerate(line_location_parts)
+        ]
+
         line_loc_inner_table = Table(
-            [line_location_parts],
+            [line_location_cells],
             colWidths=inner_col_widths,
             rowHeights=[location_row_height]
         )
@@ -341,8 +378,8 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
             ('GRID', (0, 0), (-1, -1), 1.0, colors.Color(0, 0, 0, alpha=0.95)),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 7)
+            ('LEFTPADDING', (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 2),
         ]))
         
         # Wrap the label and the inner table in a containing table
