@@ -57,30 +57,87 @@ bold_style = ParagraphStyle(name='Bold', fontName='Helvetica-Bold', fontSize=9, 
 desc_style = ParagraphStyle(name='Desc', fontName='Helvetica', fontSize=7, alignment=TA_LEFT, leading=9)
 qty_style = ParagraphStyle(name='Quantity', fontName='Helvetica', fontSize=8, alignment=TA_CENTER, leading=11)
 
-def get_autofit_paragraph(text, col_width, font_name='Helvetica-Bold',
-                           max_font_size=8, min_font_size=4, padding=4):
+def _best_two_line_split(text, font_name, font_size, available_width):
     """
-    Build a Paragraph whose font size shrinks to fit inside col_width.
-    Starts at max_font_size and steps down until the text fits on one line
-    (or min_font_size is reached, at which point it will wrap instead).
+    Try splitting text (on spaces) into two lines and return the split
+    whose longer line is narrowest, provided both lines fit available_width.
+    Returns (line1, line2) or None if no split fits / text has no space.
+    """
+    words = text.split()
+    if len(words) < 2:
+        return None
+
+    best_split = None
+    best_max_width = None
+    for i in range(1, len(words)):
+        line1 = ' '.join(words[:i])
+        line2 = ' '.join(words[i:])
+        w1 = stringWidth(line1, font_name, font_size)
+        w2 = stringWidth(line2, font_name, font_size)
+        max_w = max(w1, w2)
+        if max_w <= available_width:
+            if best_max_width is None or max_w < best_max_width:
+                best_max_width = max_w
+                best_split = (line1, line2)
+    return best_split
+
+
+def get_autofit_paragraph(text, col_width, row_height=None, font_name='Helvetica-Bold',
+                           max_font_size=8, min_font_size=4, padding=4, v_padding=2):
+    """
+    Build a Paragraph that fits inside a box of col_width x row_height.
+    Preference order:
+      1. Single line at max_font_size (no shrink, no wrap needed).
+      2. Two lines (wrapped on a space) at max_font_size - keeps text readable
+         instead of shrinking a long value like "12M LE" down to a tiny font.
+      3. Single line, shrinking the font down to min_font_size.
+      4. Two lines, shrinking the font down to min_font_size.
+      5. Single line at min_font_size as a last-resort fallback.
     """
     text = str(text) if text is not None else ""
     available_width = max(col_width - padding, 1)
+    available_height = row_height - v_padding if row_height else None
 
-    font_size = max_font_size
+    def line_fits(t, fs):
+        return stringWidth(t, font_name, fs) <= available_width
+
+    def two_lines_fit(fs):
+        split = _best_two_line_split(text, font_name, fs, available_width)
+        if not split:
+            return None
+        needed_height = 2 * (fs + 1)
+        if available_height is not None and needed_height > available_height:
+            return None
+        return split
+
+    def make_paragraph(body, fs):
+        style = ParagraphStyle(
+            name='AutoFit', fontName=font_name, fontSize=fs,
+            leading=fs + 1, alignment=TA_CENTER,
+        )
+        return Paragraph(body, style)
+
+    # 1. Single line at full size
+    if line_fits(text, max_font_size):
+        return make_paragraph(text, max_font_size)
+
+    # 2. Two lines at full size (preferred over shrinking)
+    split = two_lines_fit(max_font_size)
+    if split:
+        return make_paragraph(f"{split[0]}<br/>{split[1]}", max_font_size)
+
+    # 3 & 4. Shrink gradually, trying single line then two lines at each size
+    font_size = max_font_size - 0.5
     while font_size > min_font_size:
-        if stringWidth(text, font_name, font_size) <= available_width:
-            break
+        if line_fits(text, font_size):
+            return make_paragraph(text, font_size)
+        split = two_lines_fit(font_size)
+        if split:
+            return make_paragraph(f"{split[0]}<br/>{split[1]}", font_size)
         font_size -= 0.5
 
-    style = ParagraphStyle(
-        name='AutoFit',
-        fontName=font_name,
-        fontSize=font_size,
-        leading=font_size + 1,
-        alignment=TA_CENTER,
-    )
-    return Paragraph(text, style)
+    # 5. Last resort
+    return make_paragraph(text, min_font_size)
 
 
 def generate_qr_code(data_string):
@@ -203,7 +260,7 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
     # Find basic columns
     part_no_col = find_column(df, ['PART NO', 'PARTNO', 'PART', 'PART_NO', 'PART#'])
     desc_col = find_column(df, ['PART DESC', 'DESC', 'DESCRIPTION', 'NAME', 'PRODUCT_NAME'])
-    qty_bin_col = find_column(df, ['QTY/BIN', 'QTY_BIN', 'QTYBIN', 'QTY', 'QUANTITY'])
+    qty_bin_col = find_column(df, ['QTY/BIN', 'QTY_BIN', 'QTYBIN', 'QTY/VEH', 'QTY_VEH', 'QTYVEH', 'QTY', 'QUANTITY'])
     
     # Find Line Location columns - Updated for your exact column names
     line_location_columns = {
@@ -295,10 +352,12 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
         header_col_width = main_content_width * 0.22
         content_col_width = main_content_width * 0.71
         
+        qty_header_label = "Q/V" if qty_bin_col and 'VEH' in qty_bin_col.upper() else "Q/B"
+
         main_table_data = [
             ["Part No", Paragraph(f"{part_no}", bold_style)],
             ["Desc", Paragraph(desc[:30] + "..." if len(desc) > 30 else desc, desc_style)],
-            ["Q/B", Paragraph(str(qty_bin), qty_style)]
+            [qty_header_label, Paragraph(str(qty_bin), qty_style)]
         ]
 
         # Create main table with fixed column widths
@@ -327,7 +386,7 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
         inner_col_widths = [w * inner_table_width / total_proportion for w in COLUMN_WIDTH_PROPORTIONS]
 
         store_location_cells = [
-            get_autofit_paragraph(val, inner_col_widths[i], max_font_size=8, min_font_size=4)
+            get_autofit_paragraph(val, inner_col_widths[i], location_row_height, max_font_size=8, min_font_size=4)
             for i, val in enumerate(store_location_parts)
         ]
 
@@ -364,7 +423,7 @@ def generate_sticker_labels(df, progress_bar=None, status_container=None):
         
         # Create the inner table for line location parts using the same fixed widths
         line_location_cells = [
-            get_autofit_paragraph(val, inner_col_widths[i], max_font_size=7, min_font_size=4)
+            get_autofit_paragraph(val, inner_col_widths[i], location_row_height, max_font_size=7, min_font_size=4)
             for i, val in enumerate(line_location_parts)
         ]
 
